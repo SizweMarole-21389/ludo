@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ludo for Two</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#14161c">
 <style>
   :root { --bg:#14161c; --panel:#1e222b; --ink:#eef0f4; --mute:#9aa3b2; --line:#2e3441; --accent:#ffb300; --rose:#ffb300; }
@@ -29,7 +31,7 @@
   #cube { width:56px; height:56px; position:relative; transform-style:preserve-3d; transition:transform 1.1s cubic-bezier(.15,.7,.25,1); }
   #scene.hop { animation:hop 1.1s cubic-bezier(.3,0,.3,1); }
   @keyframes hop { 0%{transform:translateY(0)} 25%{transform:translateY(-22px)} 55%{transform:translateY(0)} 70%{transform:translateY(-7px)} 85%{transform:translateY(0)} 93%{transform:translateY(-2px)} 100%{transform:translateY(0)} }
-  .face { position:absolute; inset:0; border-radius:11px; background:linear-gradient(145deg,#fff,#f1d9e0); border:1px solid #d9b3c0;
+  .face { position:absolute; top:0; left:0; right:0; bottom:0; border-radius:11px; background:linear-gradient(145deg,#fff,#f1d9e0); border:1px solid #d9b3c0;
           display:grid; grid-template:repeat(3,1fr)/repeat(3,1fr); padding:7px; backface-visibility:hidden; }
   .face i { width:100%; height:100%; border-radius:50%; }
   .face i.p { background:radial-gradient(circle at 35% 30%,#444,#111); box-shadow:inset 0 1px 2px #0006; margin:auto; width:78%; height:78%; }
@@ -113,12 +115,12 @@
   <p class="mute" id="status"></p>
 </main>
 
-<script src="mqtt.min.js?v=10"></script>
-<script src="game.js?v=10"></script>
+<script src="mqtt.min.js?v=11"></script>
+<script src="game.js?v=11"></script>
 <script>
 (function () {
   const L = window.Ludo;
-  const VERSION = '10';
+  const VERSION = '11';
   const PREFIX = 'sizwe-ludo-';
 
   const $ = (id) => document.getElementById(id);
@@ -163,7 +165,7 @@
   // Both players talk through a free public message broker (MQTT over secure websockets).
   // That works through any home or mobile network, so no direct link between phones is needed.
   const BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
-  let mq = null, lastSeen = 0, hbTimer = null, upOnce = false;
+  let mq = null, mqs = [], lastSeen = 0, hbTimer = null, gt = null, hostReady = false;
   const topic = (dir) => 'sizwe-ludo/' + code + '/' + dir;   // 'h' host to guest, 'g' guest to host
 
   function openBroker(i, sub, onMsg, onUp, onFail) {
@@ -181,33 +183,40 @@
     return c;
   }
 
-  function send(m) {
-    if (!mq || !mq.connected) return;
-    mq.publish(topic(isHost ? 'h' : 'g'), JSON.stringify(m), { retain: isHost && m.t === 'state' });
+  function statePayload() {
+    return { t: 'state', s: S, n: names, v: VERSION, ms: deadline ? Math.max(0, deadline - Date.now()) : null };
   }
 
+  function send(m) {
+    if (isHost) {
+      const body = JSON.stringify(m.t === 'state' ? statePayload() : m);
+      mqs.forEach((c) => { if (c && c.connected) c.publish(topic('h'), body, { retain: m.t === 'state' }); });
+    } else if (mq && mq.connected) mq.publish(topic('g'), JSON.stringify(m));
+  }
+
+  // The host listens on every broker, so the guest can use whichever one her network allows.
   function startHost(c, resumeState) {
     isHost = true; mySeat = 0; code = c; names[0] = myNameEl();
     if (resumeState) S = resumeState;
-    hostConnect(0);
+    let failed = 0;
+    BROKERS.forEach((u, i) => {
+      mqs[i] = openBroker(i, topic('g'), (m) => onGuestMsg(m), hostUp,
+        () => { if (++failed === BROKERS.length) say('Could not reach the game network. Check your internet connection and reload.'); });
+    });
   }
 
-  function hostConnect(i) {
-    mq = openBroker(i, topic('g'), (m) => onGuestMsg(m), () => {
-      const link = location.origin + location.pathname + '#' + code + (i ? '-' + i : '');
-      $('link').value = link;
-      $('share').style.display = peerHere ? 'none' : 'block';
-      say(''); showGame(); setConn(peerHere);
-      sync();
-      clearInterval(hbTimer);
-      hbTimer = setInterval(() => {
-        send({ t: 'hb' });
-        if (peerHere && Date.now() - lastSeen > 15000) { setConn(false); say('Your opponent left. They can rejoin with the same link.'); }
-      }, 4000);
-    }, () => {
-      if (i + 1 < BROKERS.length) hostConnect(i + 1);
-      else say('Could not reach the game network. Check your internet connection and reload.');
-    });
+  function hostUp() {
+    if (hostReady) return;
+    hostReady = true;
+    $('link').value = location.origin + location.pathname + '#' + code;
+    $('share').style.display = peerHere ? 'none' : 'block';
+    say(''); showGame(); setConn(peerHere);
+    sync();
+    // Re-send the whole state every few seconds so a missed message heals itself.
+    hbTimer = setInterval(() => {
+      send({ t: 'state' });
+      if (peerHere && Date.now() - lastSeen > 15000) { setConn(false); say('Your opponent left. They can rejoin with the same link.'); }
+    }, 4000);
   }
 
   function onGuestMsg(m) {
@@ -226,20 +235,28 @@
   }
 
   function startGuest(c) {
-    isHost = false; mySeat = 2;
-    const parts = c.split('-'); code = parts[0];
-    const bi = Math.min(parseInt(parts[1] || '0', 10) || 0, BROKERS.length - 1);
+    isHost = false; mySeat = 2; code = c.split('-')[0];
     $('lobby').style.display = 'none';
     say('Connecting...');
-    mq = openBroker(bi, topic('h'), onHostMsg, () => {
+    const hello = () => {
+      send({ t: 'hello', name: myNameEl() });
+      if (peerHere && Date.now() - lastSeen > 15000) { setConn(false); say('Lost contact with the host. Keep this page open and it will reconnect.'); }
+    };
+    clearInterval(hbTimer); hbTimer = setInterval(hello, 4000);
+    guestTry(0, 0);
+  }
+
+  // Try each broker in turn until the host answers.
+  function guestTry(i, n) {
+    if (peerHere) return;
+    if (n >= 6) { say('Could not reach the host. Ask them to keep their page open, then reload this page.'); return; }
+    if (mq) { try { mq.end(true); } catch (e) {} }
+    const next = () => guestTry((i + 1) % BROKERS.length, n + 1);
+    mq = openBroker(i, topic('h'), onHostMsg, () => {
       say('Looking for the host...');
-      const hello = () => {
-        send({ t: 'hello', name: myNameEl() });
-        if (peerHere && Date.now() - lastSeen > 15000) { setConn(false); say('Lost contact with the host. Keep this page open and it will reconnect.'); }
-      };
-      hello(); clearInterval(hbTimer); hbTimer = setInterval(hello, 4000);
-      setTimeout(() => { if (!peerHere) say('Could not reach the host. Ask them to keep their page open, then reload this one.'); }, 20000);
-    }, () => say('Could not reach the game network. Check your internet connection and reload.'));
+      send({ t: 'hello', name: myNameEl() });
+      clearTimeout(gt); gt = setTimeout(() => { if (!peerHere) next(); }, 8000);
+    }, next);
   }
 
   function onHostMsg(m, retained) {
@@ -363,7 +380,7 @@
     win() { [523, 659, 784, 1047].forEach((f, k) => tone(f, .32, 'triangle', .14, k * .14)); },
     turn() { tone(660, .1, 'sine', .1); tone(880, .14, 'sine', .1, .1); }
   };
-  document.addEventListener('pointerdown', audio, { once: true });
+  ['pointerdown', 'touchend', 'click'].forEach((ev) => document.addEventListener(ev, audio));
   function confetti() {
     const cols = ['#e53935', '#43a047', '#fdd835', '#1e88e5', '#ffffff', '#ffb300'];
     for (let k = 0; k < 70; k++) {
