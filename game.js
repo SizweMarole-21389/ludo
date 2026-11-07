@@ -126,7 +126,27 @@
     return true;
   }
 
-  const G = { COLORS, NAMES, START, SAFE, TRACK, HOME, DONE, newState, trackIdx, movable, nextTurn, roll, move };
+  // What to play when a player runs out of time: finish > capture > leave base > furthest.
+  function autoPick(S, seat) {
+    const opts = movable(S, seat);
+    const opp = seat === 0 ? 2 : 0;
+    let best = opts[0], bs = -1;
+    opts.forEach((i) => {
+      const p = S.tok[seat][i];
+      const np = p === 0 ? 1 : p + S.dice;
+      let sc = np;
+      if (np === DONE) sc = 200;
+      else if (p === 0) sc = 60;
+      if (np <= 51) {
+        const ti = trackIdx(seat, np);
+        if (!SAFE.has(ti) && S.tok[opp].some((q) => q >= 1 && q <= 51 && trackIdx(opp, q) === ti)) sc = 300;
+      }
+      if (sc > bs) { bs = sc; best = i; }
+    });
+    return best;
+  }
+
+  const G = { autoPick, COLORS, NAMES, START, SAFE, TRACK, HOME, DONE, newState, trackIdx, movable, nextTurn, roll, move };
   if (typeof module !== 'undefined' && module.exports) module.exports = G;
   else root.Ludo = G;
 })(this);

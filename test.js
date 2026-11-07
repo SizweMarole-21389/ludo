@@ -27,6 +27,7 @@ for (let n = 0; n < 2000; n++) {
     const seat = S.turn;
     const opts = G.movable(S, seat);
     assert(opts.length > 0);
+    assert(opts.includes(G.autoPick(S, seat)));
     const before = [...S.tok[0], ...S.tok[2]].filter((p) => p === 0).length;
     assert(G.move(S, seat, opts[Math.floor(Math.random() * opts.length)]));
     const after = [...S.tok[0], ...S.tok[2]].filter((p) => p === 0).length;
