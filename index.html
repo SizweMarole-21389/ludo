@@ -44,6 +44,18 @@
   .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; background:#777; }
   .dot.on { background:#43a047; }
   #win { display:none; text-align:center; font-size:1.2rem; font-weight:700; margin-top:12px; }
+  body { -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; }
+  input[type=text] { -webkit-user-select:text; user-select:text; }
+  #who { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { display:flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px; background:#1e222b; border:1px solid var(--line); color:var(--ink); font-size:.9rem; }
+  .chip.turn { border-color:#ffb300; box-shadow:0 0 0 2px #ffb30055; }
+  .chip i { width:11px; height:11px; border-radius:50%; display:inline-block; }
+  .chip small { color:var(--mute); }
+  details { color:var(--mute); font-size:.92rem; margin-top:14px; }
+  details summary { cursor:pointer; color:var(--ink); }
+  details li { margin:4px 0; }
+  .cf { position:fixed; top:-12px; width:9px; height:14px; z-index:50; pointer-events:none; animation:fall linear forwards; }
+  @keyframes fall { to { transform:translateY(110vh) rotate(720deg); } }
 </style>
 </head>
 <body>
@@ -72,7 +84,7 @@
   </section>
 
   <section id="game">
-    <div id="bar"><span id="who"></span><span id="conn"></span></div>
+    <div id="bar"><div id="who"></div><span id="conn"></span></div>
     <canvas id="board" width="900" height="900"></canvas>
     <div id="dock">
       <div id="scene"><div id="cube"></div></div>
@@ -81,27 +93,33 @@
     </div>
     <div id="timer"><i></i></div><div id="tt"></div>
     <div class="row" style="margin-top:12px">
+      <button id="muteBtn" class="ghost">Sound on</button>
       <button id="againBtn" class="ghost" style="display:none">Play again</button>
     <div id="win"></div>
+    <details>
+      <summary>How to play</summary>
+      <ul>
+        <li>Roll a 6 to bring a pawn out of your base. A 6 also gives you another roll.</li>
+        <li>Move clockwise around the board. Landing on a lone opponent pawn sends it back to its base.</li>
+        <li>Pawns on a start square or a star square are safe.</li>
+        <li>Three 6s in a row loses your turn.</li>
+        <li>You need the exact number to reach the centre. First to bring all four pawns home wins.</li>
+        <li>You have 10 seconds for each decision, or the game plays for you.</li>
+      </ul>
+    </details>
     </div>
   </section>
 
   <p class="mute" id="status"></p>
 </main>
 
-<script src="peerjs.min.js?v=8"></script>
-<script src="game.js?v=8"></script>
+<script src="mqtt.min.js?v=10"></script>
+<script src="game.js?v=10"></script>
 <script>
 (function () {
   const L = window.Ludo;
-  const VERSION = '8';
+  const VERSION = '10';
   const PREFIX = 'sizwe-ludo-';
-  const ICE = { iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' },
-    { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443?transport=tcp'],
-      username: 'openrelayproject', credential: 'openrelayproject' }
-  ] };
 
   const $ = (id) => document.getElementById(id);
   const cv = $('board'), ctx = cv.getContext('2d');
@@ -111,7 +129,7 @@
   const TURN_MS = 10000;
   let tmr = null, deadline = null, spin = 0;
   const vis = { 0: [0, 0, 0, 0], 2: [0, 0, 0, 0] };  // progress as drawn, walks towards the real one
-  let lastT = 0;
+  let lastT = 0, lastTurnKey = '', winPlayed = false;
   const names = { 0: 'Red', 2: 'Yellow' };
   const myNameEl = () => ($('myName').value.trim() || (isHost ? 'Red' : 'Yellow')).slice(0, 14);
   const nm = (seat) => names[seat] || L.NAMES[seat];
@@ -131,8 +149,7 @@
   function showGame() {
     $('lobby').style.display = 'none';
     $('game').style.display = 'block';
-    $('who').innerHTML = 'Playing as <b style="color:' + L.COLORS[mySeat] + '"></b>';
-    $('who').querySelector('b').textContent = nm(mySeat);
+    wakeLock();
     render();
   }
 
@@ -143,59 +160,109 @@
     render();
   }
 
+  // Both players talk through a free public message broker (MQTT over secure websockets).
+  // That works through any home or mobile network, so no direct link between phones is needed.
+  const BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
+  let mq = null, lastSeen = 0, hbTimer = null, upOnce = false;
+  const topic = (dir) => 'sizwe-ludo/' + code + '/' + dir;   // 'h' host to guest, 'g' guest to host
+
+  function openBroker(i, sub, onMsg, onUp, onFail) {
+    const c = mqtt.connect(BROKERS[i], { connectTimeout: 8000, reconnectPeriod: 2000, clean: true,
+      clientId: 'ludo' + Math.random().toString(16).slice(2, 10) });
+    let up = false;
+    c.on('connect', () => {
+      c.subscribe(sub, { qos: 0 }, () => { if (!up) { up = true; onUp(); } });
+    });
+    c.on('message', (tp, buf, pkt) => {
+      let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
+      onMsg(m, pkt && pkt.retain);
+    });
+    setTimeout(() => { if (!up) { c.end(true); onFail(); } }, 9000);
+    return c;
+  }
+
+  function send(m) {
+    if (!mq || !mq.connected) return;
+    mq.publish(topic(isHost ? 'h' : 'g'), JSON.stringify(m), { retain: isHost && m.t === 'state' });
+  }
+
   function startHost(c, resumeState) {
     isHost = true; mySeat = 0; code = c; names[0] = myNameEl();
     if (resumeState) S = resumeState;
-    peer = new Peer(PREFIX + code, { config: ICE });
-    peer.on('open', () => {
-      const link = location.origin + location.pathname + '#' + code;
+    hostConnect(0);
+  }
+
+  function hostConnect(i) {
+    mq = openBroker(i, topic('g'), (m) => onGuestMsg(m), () => {
+      const link = location.origin + location.pathname + '#' + code + (i ? '-' + i : '');
       $('link').value = link;
-      $('share').style.display = 'block';
-      store('ludo-host', { code, S });
-      say('');
-      showGame();
-      setConn(false);
+      $('share').style.display = peerHere ? 'none' : 'block';
+      say(''); showGame(); setConn(peerHere);
+      sync();
+      clearInterval(hbTimer);
+      hbTimer = setInterval(() => {
+        send({ t: 'hb' });
+        if (peerHere && Date.now() - lastSeen > 15000) { setConn(false); say('Your opponent left. They can rejoin with the same link.'); }
+      }, 4000);
+    }, () => {
+      if (i + 1 < BROKERS.length) hostConnect(i + 1);
+      else say('Could not reach the game network. Check your internet connection and reload.');
     });
-    peer.on('connection', (c2) => {
-      if (conn && conn.open) { c2.close(); return; }
-      conn = c2;
-      c2.on('open', () => { setConn(true); $('share').style.display = 'none'; sync(); });
-      c2.on('data', onGuestMsg);
-      c2.on('close', () => { setConn(false); say('Your opponent left. They can rejoin with the same link.'); });
-      c2.on('error', () => setConn(false));
-    });
-    peer.on('error', (e) => {
-      if (e.type === 'unavailable-id') { say('That game code is already in use. Starting a fresh one.'); peer.destroy(); startHost(randCode(), null); }
-      else say('Connection problem: ' + e.type);
-    });
+  }
+
+  function onGuestMsg(m) {
+    if (!isHost || !m) return;
+    lastSeen = Date.now();
+    if (m.t === 'hello') {
+      const nmv = String(m.name || 'Yellow').slice(0, 14);
+      if (!peerHere || names[2] !== nmv) {
+        names[2] = nmv;
+        if (!peerHere) { setConn(true); say(''); $('share').style.display = 'none'; }
+        sync();
+      }
+    } else if (m.t === 'roll') hostRoll(2);
+    else if (m.t === 'move') hostMove(2, m.i);
+    else if (m.t === 'again') hostAgain();
   }
 
   function startGuest(c) {
-    isHost = false; mySeat = 2; code = c;
+    isHost = false; mySeat = 2;
+    const parts = c.split('-'); code = parts[0];
+    const bi = Math.min(parseInt(parts[1] || '0', 10) || 0, BROKERS.length - 1);
     $('lobby').style.display = 'none';
     say('Connecting...');
-    peer = new Peer(undefined, { config: ICE });
-    peer.on('open', () => {
-      conn = peer.connect(PREFIX + code, { reliable: true });
-      const t = setTimeout(() => { if (!peerHere) say('Could not reach the host. Ask them to keep their page open, then reload this one.'); }, 20000);
-      conn.on('open', () => { clearTimeout(t); say(''); showGame(); setConn(true); send({ t: 'hello', name: myNameEl() }); });
-      conn.on('data', (m) => { if (m && m.t === 'state' && m.v !== VERSION) {
-        // This page is an older copy than the host's, so fetch the current one.
-        say('Updating to the latest version...');
-        let tried = false; try { tried = sessionStorage.getItem('ludo-upd') === m.v; sessionStorage.setItem('ludo-upd', m.v || 'x'); } catch (e) {}
-        if (!tried) location.replace(location.pathname + '?v=' + (m.v || Date.now()) + location.hash);
-        else say('Your page is out of date. Refresh it with Ctrl+Shift+R.');
-        return;
-      }
-      if (m && m.t === 'state') { S = m.s; if (m.n) Object.assign(names, m.n); deadline = m.ms ? Date.now() + m.ms : null; render(); } });
-      conn.on('close', () => { setConn(false); say('Disconnected from the host. Reload this page to rejoin.'); });
-    });
-    peer.on('error', (e) => say(e.type === 'peer-unavailable'
-      ? 'That game was not found. Ask your partner to start a new one and send a fresh link.'
-      : 'Connection problem: ' + e.type));
+    mq = openBroker(bi, topic('h'), onHostMsg, () => {
+      say('Looking for the host...');
+      const hello = () => {
+        send({ t: 'hello', name: myNameEl() });
+        if (peerHere && Date.now() - lastSeen > 15000) { setConn(false); say('Lost contact with the host. Keep this page open and it will reconnect.'); }
+      };
+      hello(); clearInterval(hbTimer); hbTimer = setInterval(hello, 4000);
+      setTimeout(() => { if (!peerHere) say('Could not reach the host. Ask them to keep their page open, then reload this one.'); }, 20000);
+    }, () => say('Could not reach the game network. Check your internet connection and reload.'));
   }
 
-  function send(m) { if (conn && conn.open) conn.send(m); }
+  function onHostMsg(m, retained) {
+    if (isHost || !m) return;
+    if (!retained) {
+      lastSeen = Date.now();
+      if (!peerHere) { say(''); showGame(); setConn(true); }
+    }
+    if (m.t !== 'state') return;
+    if (m.v !== VERSION) {
+      // This page is an older copy than the host's, so fetch the current one.
+      say('Updating to the latest version...');
+      let tried = false;
+      try { tried = sessionStorage.getItem('ludo-upd') === String(m.v); sessionStorage.setItem('ludo-upd', String(m.v)); } catch (e) {}
+      if (!tried) location.replace(location.pathname + '?v=' + (m.v || Date.now()) + location.hash);
+      else say('Your page is out of date. Refresh it with Ctrl+Shift+R.');
+      return;
+    }
+    S = m.s; if (m.n) Object.assign(names, m.n);
+    deadline = m.ms ? Date.now() + m.ms : null;
+    if (retained) return render();
+    render();
+  }
 
   function armTimer() {
     clearTimeout(tmr); deadline = null;
@@ -225,14 +292,6 @@
     render();
   }
 
-  function onGuestMsg(m) {
-    if (!isHost || !m) return;
-    if (m.t === 'hello') { names[2] = String(m.name || 'Yellow').slice(0, 14); sync(); }
-    else if (m.t === 'roll') hostRoll(2);
-    else if (m.t === 'move') hostMove(2, m.i);
-    else if (m.t === 'again') hostAgain();
-  }
-
   // ---------- host-side actions ----------
   function hostRoll(seat) {
     if (!L.roll(S, seat)) return;
@@ -252,7 +311,24 @@
 
   // ---------- UI ----------
   const FACES = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+  function chips() {
+    $('who').innerHTML = '';
+    [0, 2].forEach((seat) => {
+      const c = document.createElement('span');
+      c.className = 'chip' + (S.turn === seat && S.winner == null ? ' turn' : '');
+      const dot = document.createElement('i'); dot.style.background = L.COLORS[seat];
+      const n = document.createElement('span'); n.textContent = nm(seat) + (seat === mySeat ? ' (you)' : '');
+      const h = document.createElement('small'); h.textContent = S.tok[seat].filter((p) => p === L.DONE).length + '/4 home';
+      c.append(dot, n, h); $('who').appendChild(c);
+    });
+  }
+
   function render() {
+    chips();
+    const key = S.turn + ':' + S.seq + ':' + (S.dice == null);
+    if (S.winner == null && S.turn === mySeat && S.dice == null && !S.passing && key !== lastTurnKey && peerHere) { lastTurnKey = key; SFX.turn(); }
+    if (S.winner != null && !winPlayed) { winPlayed = true; SFX.win(); confetti(); }
+    if (S.winner == null) winPlayed = false;
     const mine = S.turn === mySeat && S.winner == null;
     $('msg').textContent = S.msg.replace(/\bRed\b/g, nm(0)).replace(/\bYellow\b/g, nm(2)) + (mine && S.dice == null && !S.passing ? ' (your turn)' : '');
     $('rollBtn').disabled = !(peerHere && mine && S.dice == null && !S.passing);
@@ -264,6 +340,49 @@
       if (S.dice) tumble(S.dice);
     }
   }
+
+  // ---------- sound, confetti, wake lock ----------
+  let ac = null, muted = false;
+  try { muted = localStorage.getItem('ludo-mute') === '1'; } catch (e) {}
+  function audio() {
+    if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+    if (ac && ac.state === 'suspended') ac.resume();
+    return ac;
+  }
+  function tone(f, d, type, vol, delay) {
+    if (muted) return; const a = audio(); if (!a) return;
+    const t = a.currentTime + (delay || 0), o = a.createOscillator(), g = a.createGain();
+    o.type = type || 'sine'; o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(vol || .12, t); g.gain.exponentialRampToValueAtTime(.0001, t + d);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + d + .02);
+  }
+  const SFX = {
+    roll() { for (let k = 0; k < 7; k++) tone(180 + Math.random() * 220, .05, 'square', .05, k * .11); },
+    step() { tone(520, .06, 'triangle', .1); },
+    capture() { tone(440, .12, 'sawtooth', .09); tone(300, .18, 'sawtooth', .09, .1); tone(180, .25, 'sawtooth', .09, .22); },
+    win() { [523, 659, 784, 1047].forEach((f, k) => tone(f, .32, 'triangle', .14, k * .14)); },
+    turn() { tone(660, .1, 'sine', .1); tone(880, .14, 'sine', .1, .1); }
+  };
+  document.addEventListener('pointerdown', audio, { once: true });
+  function confetti() {
+    const cols = ['#e53935', '#43a047', '#fdd835', '#1e88e5', '#ffffff', '#ffb300'];
+    for (let k = 0; k < 70; k++) {
+      const d = document.createElement('i'); d.className = 'cf';
+      d.style.left = Math.random() * 100 + 'vw'; d.style.background = cols[k % cols.length];
+      d.style.animationDuration = 2.5 + Math.random() * 2.5 + 's'; d.style.animationDelay = Math.random() * 1.2 + 's';
+      document.body.appendChild(d); setTimeout(() => d.remove(), 7000);
+    }
+  }
+  let wl = null;
+  function wakeLock() {
+    try { if (navigator.wakeLock && !wl) navigator.wakeLock.request('screen').then((l) => { wl = l; l.addEventListener('release', () => { wl = null; }); }).catch(() => {}); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    wakeLock();
+    if (mq && !mq.connected) mq.reconnect && mq.reconnect();
+    if (isHost) sync(); else if (mq) send({ t: 'hello', name: myNameEl() });
+  });
 
   // 3D dice: face n comes to the front by the inverse of where it sits on the cube.
   const FACE_ROT = { 1: [0, 0], 2: [0, -90], 3: [-90, 0], 4: [90, 0], 5: [0, 90], 6: [0, 180] };
@@ -278,6 +397,7 @@
     cube.style.transform = 'rotateX(-25deg) rotateY(-30deg)';
   })();
   function tumble(n) {
+    SFX.roll();
     spin += 2;
     const r = FACE_ROT[n];
     $('cube').style.transform = 'rotateX(' + (r[0] + 360 * spin) + 'deg) rotateY(' + (r[1] + 360 * spin) + 'deg)';
@@ -416,8 +536,8 @@
     [0, 2].forEach((seat) => S.tok[seat].forEach((p, i) => {
       const v = vis[seat][i];
       if (v === p) return;
-      if (v === 0 || p < v) vis[seat][i] = p;
-      else vis[seat][i] = Math.min(p, v + dt * 0.007);
+      if (v === 0 || p < v) { if (p === 0 && v > 0) SFX.capture(); vis[seat][i] = p; }
+      else { const nv = Math.min(p, v + dt * 0.007); if (Math.floor(nv) !== Math.floor(v)) SFX.step(); vis[seat][i] = nv; }
     }));
   }
 
@@ -436,6 +556,12 @@
       });
     });
     const can = L.movable(S, mySeat);
+    const idle = items.every((it) => it.p !== -1);
+    if (idle) can.forEach((i) => {
+      const p = S.tok[mySeat][i], np = p === 0 ? 1 : p + S.dice, d = tokenPos(mySeat, i, np);
+      ctx.beginPath(); ctx.arc(d[0] * u, d[1] * u, .34 * u, 0, 7);
+      ctx.setLineDash([u * .12, u * .1]); ctx.lineWidth = u * .06; ctx.strokeStyle = '#ffb300'; ctx.stroke(); ctx.setLineDash([]);
+    });
     items.sort((a, b) => a.pos[1] - b.pos[1]);
     items.forEach((it) => {
       let x = it.pos[0] * u, y = it.pos[1] * u + u * .04;
@@ -486,6 +612,9 @@
     if (best >= 0) act('move', best);
   });
 
+  const showMute = () => { $('muteBtn').textContent = muted ? 'Sound off' : 'Sound on'; };
+  $('muteBtn').onclick = () => { muted = !muted; try { localStorage.setItem('ludo-mute', muted ? '1' : '0'); } catch (e) {} showMute(); audio(); };
+  showMute();
   $('rollBtn').onclick = () => act('roll');
   $('scene').onclick = () => { if (!$('rollBtn').disabled) act('roll'); };
   $('againBtn').onclick = () => act('again');
@@ -508,6 +637,7 @@
   }
   else if (hash && saved && saved.code === hash) { say('Resuming your game...'); startHost(saved.code, saved.S); }
   else if (saved) $('resumeBtn').style.display = 'inline-block';
+  if (location.search.indexOf('debug') >= 0) window.__dbg = () => ({ S, mySeat, deadline, peerHere, pos: (i) => tokenPos(mySeat, i, S.tok[mySeat][i]), vis });
   requestAnimationFrame(frame);
 })();
 </script>
