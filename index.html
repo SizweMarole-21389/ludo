@@ -89,11 +89,12 @@
   <p class="mute" id="status"></p>
 </main>
 
-<script src="peerjs.min.js"></script>
-<script src="game.js"></script>
+<script src="peerjs.min.js?v=8"></script>
+<script src="game.js?v=8"></script>
 <script>
 (function () {
   const L = window.Ludo;
+  const VERSION = '8';
   const PREFIX = 'sizwe-ludo-';
   const ICE = { iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -109,6 +110,8 @@
   let shownSeq = -1;
   const TURN_MS = 10000;
   let tmr = null, deadline = null, spin = 0;
+  const vis = { 0: [0, 0, 0, 0], 2: [0, 0, 0, 0] };  // progress as drawn, walks towards the real one
+  let lastT = 0;
   const names = { 0: 'Red', 2: 'Yellow' };
   const myNameEl = () => ($('myName').value.trim() || (isHost ? 'Red' : 'Yellow')).slice(0, 14);
   const nm = (seat) => names[seat] || L.NAMES[seat];
@@ -176,7 +179,15 @@
       conn = peer.connect(PREFIX + code, { reliable: true });
       const t = setTimeout(() => { if (!peerHere) say('Could not reach the host. Ask them to keep their page open, then reload this one.'); }, 20000);
       conn.on('open', () => { clearTimeout(t); say(''); showGame(); setConn(true); send({ t: 'hello', name: myNameEl() }); });
-      conn.on('data', (m) => { if (m && m.t === 'state') { S = m.s; if (m.n) Object.assign(names, m.n); deadline = m.ms ? Date.now() + m.ms : null; render(); } });
+      conn.on('data', (m) => { if (m && m.t === 'state' && m.v !== VERSION) {
+        // This page is an older copy than the host's, so fetch the current one.
+        say('Updating to the latest version...');
+        let tried = false; try { tried = sessionStorage.getItem('ludo-upd') === m.v; sessionStorage.setItem('ludo-upd', m.v || 'x'); } catch (e) {}
+        if (!tried) location.replace(location.pathname + '?v=' + (m.v || Date.now()) + location.hash);
+        else say('Your page is out of date. Refresh it with Ctrl+Shift+R.');
+        return;
+      }
+      if (m && m.t === 'state') { S = m.s; if (m.n) Object.assign(names, m.n); deadline = m.ms ? Date.now() + m.ms : null; render(); } });
       conn.on('close', () => { setConn(false); say('Disconnected from the host. Reload this page to rejoin.'); });
     });
     peer.on('error', (e) => say(e.type === 'peer-unavailable'
@@ -209,7 +220,7 @@
     if (isHost) {
       armTimer();
       store('ludo-host', { code, S });
-      send({ t: 'state', s: S, n: names, ms: deadline ? TURN_MS : null });
+      send({ t: 'state', s: S, n: names, ms: deadline ? TURN_MS : null, v: VERSION });
     }
     render();
   }
@@ -391,9 +402,31 @@
     ctx.beginPath(); ctx.ellipse(x, hy - hr * .05, hr * .3, hr * .14, 0, 0, 7); ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fill();
   }
 
+  // Where a pawn is drawn: on a square, or part way between two while it walks.
+  function posAt(seat, i, v) {
+    const a = Math.floor(v), f = v - a;
+    const A = tokenPos(seat, i, a);
+    if (f < 1e-6) return A;
+    const B = tokenPos(seat, i, a + 1);
+    return [A[0] + (B[0] - A[0]) * f, A[1] + (B[1] - A[1]) * f];
+  }
+
+  // One square at a time, about 7 a second. Going backwards (captured) or leaving base is not a walk.
+  function stepVis(dt) {
+    [0, 2].forEach((seat) => S.tok[seat].forEach((p, i) => {
+      const v = vis[seat][i];
+      if (v === p) return;
+      if (v === 0 || p < v) vis[seat][i] = p;
+      else vis[seat][i] = Math.min(p, v + dt * 0.007);
+    }));
+  }
+
   function drawTokens(u, t) {
     const items = [];
-    [0, 2].forEach((seat) => S.tok[seat].forEach((p, i) => items.push({ seat, i, p, pos: tokenPos(seat, i, p) })));
+    [0, 2].forEach((seat) => S.tok[seat].forEach((p, i) => {
+      const v = vis[seat][i];
+      items.push({ seat, i, p: Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : -1, v, pos: posAt(seat, i, v) });
+    }));
     const groups = {};
     items.forEach((it) => { if (it.p > 0 && it.p < L.DONE) (groups[it.pos.join()] = groups[it.pos.join()] || []).push(it); });
     Object.values(groups).forEach((g) => {
@@ -406,6 +439,7 @@
     items.sort((a, b) => a.pos[1] - b.pos[1]);
     items.forEach((it) => {
       let x = it.pos[0] * u, y = it.pos[1] * u + u * .04;
+      if (it.p === -1) y -= Math.sin((it.v % 1) * Math.PI) * u * .22;
       const s = it.small ? .78 : 1;
       if (it.seat === mySeat && can.includes(it.i)) {
         const k = .5 + .5 * Math.sin(t / 160);
@@ -426,6 +460,7 @@
     if ($('game').style.display === 'block') {
       fit();
       const u = cv.width / 15;
+      stepVis(Math.min(80, t - lastT)); lastT = t;
       drawBoard(u); drawTokens(u, t);
       const tm = $('timer'), tt = $('tt');
       if (deadline && S.winner == null && !S.passing) {
