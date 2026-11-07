@@ -53,6 +53,7 @@
     <div class="row" style="margin-bottom:12px"><input type="text" id="myName" maxlength="14" placeholder="Your name"></div>
     <div class="row">
       <button id="newBtn">Start a new game</button>
+      <button id="joinBtn" style="display:none">Join the game \u2665</button>
       <button id="resumeBtn" class="ghost" style="display:none">Resume my last game</button>
     </div>
   </section>
@@ -364,7 +365,11 @@
   // ---------- boot ----------
   const hash = location.hash.replace('#', '').trim();
   const saved = load('ludo-host');
-  if (hash && !(saved && saved.code === hash)) startGuest(hash);
+  if (hash && !(saved && saved.code === hash)) {
+    $('newBtn').style.display = 'none'; $('joinBtn').style.display = 'inline-block';
+    $('lobby').querySelector('p').textContent = 'Someone special invited you to play Ludo. Enter your name and join.';
+    $('joinBtn').onclick = () => startGuest(hash);
+  }
   else if (hash && saved && saved.code === hash) { say('Resuming your game...'); startHost(saved.code, saved.S); }
   else if (saved) $('resumeBtn').style.display = 'inline-block';
   requestAnimationFrame(frame);
