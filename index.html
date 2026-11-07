@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ludo for Two</title>
+<meta name="theme-color" content="#3d0f27">
+<style>
+  :root { --bg:#2a0a1a; --panel:#43132bcc; --ink:#fff1f4; --mute:#e7b4c4; --line:#d4a35a55; --accent:#e8b86a; --rose:#ff6f91; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--ink); font:17px/1.45 Georgia,'Palatino Linotype',serif; display:flex; justify-content:center;
+         padding:16px; min-height:100vh; overflow-x:hidden;
+         background:radial-gradient(1200px 700px at 50% -10%,#7a1f48 0%,#3d0f27 50%,#1f0713 100%) fixed; }
+  main { width:100%; max-width:560px; position:relative; z-index:1; }
+  h1 { font:italic 400 2.1rem/1.1 Georgia,serif; text-align:center; margin:10px 0 2px; color:#ffd9e2; text-shadow:0 0 18px #ff6f9166; }
+  .sub { text-align:center; color:var(--mute); margin:0 0 16px; font-style:italic; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:18px; margin-bottom:12px;
+          backdrop-filter:blur(6px); box-shadow:0 8px 30px #0006; }
+  button { font:inherit; font-weight:bold; color:#3d0f27; background:linear-gradient(180deg,#f6d9a0,#e0a850); border:0; border-radius:999px;
+           padding:11px 20px; cursor:pointer; box-shadow:0 3px 0 #a9742b,0 6px 14px #0005; }
+  button:active { transform:translateY(2px); box-shadow:0 1px 0 #a9742b; }
+  button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); box-shadow:none; }
+  button:disabled { opacity:.4; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input[type=text] { flex:1; min-width:0; font:inherit; color:var(--ink); background:#1f071380; border:1px solid var(--line); border-radius:999px; padding:10px 14px; }
+  .mute { color:var(--mute); font-size:.95rem; }
+  #game { display:none; }
+  #board { width:100%; aspect-ratio:1; display:block; border-radius:18px; touch-action:manipulation;
+           border:3px solid #e8b86a; box-shadow:0 0 0 6px #5a1738,0 14px 40px #000a, 0 0 40px #ff6f9144; }
+  #bar { display:flex; justify-content:space-between; gap:8px; margin-bottom:10px; font-size:.95rem; color:var(--mute); }
+  #dock { display:flex; align-items:center; gap:14px; margin-top:16px; }
+  #die { width:66px; height:66px; border-radius:16px; background:linear-gradient(145deg,#fff,#f3dfe5); color:#7a1f48; display:grid; place-items:center;
+         font-size:2.7rem; line-height:1; flex:none; box-shadow:0 4px 0 #c99aa9,0 8px 16px #0006; }
+  #die.roll { animation:shake .45s; }
+  @keyframes shake { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-16deg) scale(1.08)} 75%{transform:rotate(16deg) scale(1.08)} }
+  #msg { flex:1; font-style:italic; font-size:1.05rem; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; background:#8a6575; }
+  .dot.on { background:#ff6f91; box-shadow:0 0 8px #ff6f91; }
+  #hearts { position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden; }
+  #hearts i { position:absolute; bottom:-40px; font-style:normal; color:#ff6f91; opacity:.0; animation:float linear infinite; }
+  @keyframes float { 0%{transform:translateY(0) rotate(0);opacity:0} 10%{opacity:.35} 100%{transform:translateY(-110vh) rotate(25deg);opacity:0} }
+  #win { display:none; text-align:center; font-size:1.3rem; font-style:italic; color:#ffd9e2; margin-top:12px; }
+</style>
+</head>
+<body>
+<main>
+  <div id="hearts"></div>
+  <h1>Ludo for Two</h1>
+  <p class="sub">a little game for two hearts, wherever they are</p>
+
+  <section id="lobby" class="card">
+    <p style="margin-top:0">Start a game, send your love the link, and play together from anywhere. No sign up, nothing to install.</p>
+    <div class="row" style="margin-bottom:12px"><input type="text" id="myName" maxlength="14" placeholder="Your name"></div>
+    <div class="row">
+      <button id="newBtn">Start a new game</button>
+      <button id="resumeBtn" class="ghost" style="display:none">Resume my last game</button>
+    </div>
+  </section>
+
+  <section id="share" class="card" style="display:none">
+    <div class="mute" style="margin-bottom:8px">Send this link to your love. Keep this page open until they arrive.</div>
+    <div class="row">
+      <input type="text" id="link" readonly>
+      <button id="copyBtn">Copy</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="waBtn" class="ghost">Send on WhatsApp ♥</button>
+    </div>
+  </section>
+
+  <section id="game">
+    <div id="bar"><span id="who"></span><span id="conn"></span></div>
+    <canvas id="board" width="900" height="900"></canvas>
+    <div id="dock">
+      <div id="die">?</div>
+      <div id="msg"></div>
+      <button id="rollBtn" disabled>Roll</button>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="againBtn" class="ghost" style="display:none">Play again</button>
+    <div id="win"></div>
+    </div>
+  </section>
+
+  <p class="mute" id="status"></p>
+</main>
+
+<script src="peerjs.min.js"></script>
+<script src="game.js"></script>
+<script>
+(function () {
+  const L = window.Ludo;
+  const PREFIX = 'sizwe-ludo-';
+  const ICE = { iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443?transport=tcp'],
+      username: 'openrelayproject', credential: 'openrelayproject' }
+  ] };
+
+  const $ = (id) => document.getElementById(id);
+  const cv = $('board'), ctx = cv.getContext('2d');
+  let S = L.newState();
+  let peer = null, conn = null, isHost = false, code = '', mySeat = 0, peerHere = false;
+  let shownSeq = -1;
+  const names = { 0: 'Red', 2: 'Yellow' };
+  const myNameEl = () => ($('myName').value.trim() || (isHost ? 'Red' : 'Yellow')).slice(0, 14);
+  const nm = (seat) => names[seat] || L.NAMES[seat];
+
+  function store(k, v) { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+  function say(t) { $('status').textContent = t || ''; }
+
+  function randCode() {
+    const a = 'abcdefghjkmnpqrstuvwxyz23456789';
+    let s = '';
+    for (let i = 0; i < 6; i++) s += a[Math.floor(Math.random() * a.length)];
+    return s;
+  }
+
+  // ---------- networking ----------
+  function showGame() {
+    $('lobby').style.display = 'none';
+    $('game').style.display = 'block';
+    $('who').innerHTML = 'Playing as <b style="color:' + L.COLORS[mySeat] + '"></b>';
+    $('who').querySelector('b').textContent = nm(mySeat);
+    render();
+  }
+
+  function setConn(on) {
+    peerHere = on;
+    $('conn').innerHTML = '<span class="dot' + (on ? ' on' : '') + '"></span>' + (on ? 'Together \u2665' : 'Waiting for your love');
+    render();
+  }
+
+  function startHost(c, resumeState) {
+    isHost = true; mySeat = 0; code = c; names[0] = myNameEl();
+    if (resumeState) S = resumeState;
+    peer = new Peer(PREFIX + code, { config: ICE });
+    peer.on('open', () => {
+      const link = location.origin + location.pathname + '#' + code;
+      $('link').value = link;
+      $('share').style.display = 'block';
+      store('ludo-host', { code, S });
+      say('');
+      showGame();
+      setConn(false);
+    });
+    peer.on('connection', (c2) => {
+      if (conn && conn.open) { c2.close(); return; }
+      conn = c2;
+      c2.on('open', () => { setConn(true); $('share').style.display = 'none'; sync(); });
+      c2.on('data', onGuestMsg);
+      c2.on('close', () => { setConn(false); say('Your partner left. They can rejoin with the same link.'); });
+      c2.on('error', () => setConn(false));
+    });
+    peer.on('error', (e) => {
+      if (e.type === 'unavailable-id') { say('That game code is already in use. Starting a fresh one.'); peer.destroy(); startHost(randCode(), null); }
+      else say('Connection problem: ' + e.type);
+    });
+  }
+
+  function startGuest(c) {
+    isHost = false; mySeat = 2; code = c;
+    $('lobby').style.display = 'none';
+    say('Connecting to your partner...');
+    peer = new Peer(undefined, { config: ICE });
+    peer.on('open', () => {
+      conn = peer.connect(PREFIX + code, { reliable: true });
+      const t = setTimeout(() => { if (!peerHere) say('Could not reach the host. Ask them to keep their page open, then reload this one.'); }, 20000);
+      conn.on('open', () => { clearTimeout(t); say(''); showGame(); setConn(true); send({ t: 'hello', name: myNameEl() }); });
+      conn.on('data', (m) => { if (m && m.t === 'state') { S = m.s; if (m.n) Object.assign(names, m.n); render(); } });
+      conn.on('close', () => { setConn(false); say('Disconnected from the host. Reload this page to rejoin.'); });
+    });
+    peer.on('error', (e) => say(e.type === 'peer-unavailable'
+      ? 'That game was not found. Ask your partner to start a new one and send a fresh link.'
+      : 'Connection problem: ' + e.type));
+  }
+
+  function send(m) { if (conn && conn.open) conn.send(m); }
+
+  function sync() {
+    if (isHost) { store('ludo-host', { code, S }); send({ t: 'state', s: S, n: names }); }
+    render();
+  }
+
+  function onGuestMsg(m) {
+    if (!isHost || !m) return;
+    if (m.t === 'hello') { names[2] = String(m.name || 'Yellow').slice(0, 14); sync(); }
+    else if (m.t === 'roll') hostRoll(2);
+    else if (m.t === 'move') hostMove(2, m.i);
+    else if (m.t === 'again') hostAgain();
+  }
+
+  // ---------- host-side actions ----------
+  function hostRoll(seat) {
+    if (!L.roll(S, seat)) return;
+    sync();
+    if (S.passing) setTimeout(() => { L.nextTurn(S); sync(); }, 1500);
+  }
+  function hostMove(seat, i) { if (L.move(S, seat, i)) sync(); }
+  function hostAgain() { if (S.winner != null) { S = L.newState(); sync(); } }
+
+  function act(kind, i) {
+    if (isHost) {
+      if (kind === 'roll') hostRoll(mySeat);
+      else if (kind === 'move') hostMove(mySeat, i);
+      else hostAgain();
+    } else send({ t: kind, i });
+  }
+
+  // ---------- UI ----------
+  const FACES = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+  function render() {
+    const mine = S.turn === mySeat && S.winner == null;
+    $('msg').textContent = S.msg.replace(/\bRed\b/g, nm(0)).replace(/\bYellow\b/g, nm(2)) + (mine && S.dice == null && !S.passing ? ' (your turn)' : '');
+    $('rollBtn').disabled = !(peerHere && mine && S.dice == null && !S.passing);
+    $('againBtn').style.display = S.winner != null ? 'inline-block' : 'none';
+    $('win').style.display = S.winner != null ? 'block' : 'none';
+    if (S.winner != null) $('win').textContent = '\u2665 ' + nm(S.winner) + ' wins, but love wins more \u2665';
+    const die = $('die');
+    die.textContent = S.dice ? FACES[S.dice] : '?';
+    if (S.seq !== shownSeq) {
+      shownSeq = S.seq;
+      if (S.dice) { die.classList.remove('roll'); void die.offsetWidth; die.classList.add('roll'); }
+    }
+  }
+
+  // ---------- drawing ----------
+  const BASE_ORIGIN = [[0, 0], [9, 0], [9, 9], [0, 9]];
+  const SLOT = [[2, 2], [4, 2], [2, 4], [4, 4]];
+  const DIR = [[-1, 0], [0, -1], [1, 0], [0, 1]];
+
+  function tokenPos(seat, i, p) {
+    if (p === 0) { const o = BASE_ORIGIN[seat]; return [o[0] + SLOT[i][0], o[1] + SLOT[i][1]]; }
+    if (p <= 51) { const c = L.TRACK[L.trackIdx(seat, p)]; return [c[0] + .5, c[1] + .5]; }
+    if (p < L.DONE) { const c = L.HOME[seat][p - 52]; return [c[0] + .5, c[1] + .5]; }
+    const d = DIR[seat], perp = [-d[1], d[0]];
+    return [7.5 + d[0] * .85 + perp[0] * (i - 1.5) * .28, 7.5 + d[1] * .85 + perp[1] * (i - 1.5) * .28];
+  }
+
+  function star(x, y, r) {
+    ctx.beginPath();
+    for (let k = 0; k < 10; k++) {
+      const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? r * .45 : r;
+      ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    ctx.closePath();
+  }
+
+  function heart(x, y, r) {
+    ctx.beginPath();
+    ctx.moveTo(x, y + r * .85);
+    ctx.bezierCurveTo(x - r * 1.35, y - r * .1, x - r * .75, y - r * 1.05, x, y - r * .4);
+    ctx.bezierCurveTo(x + r * .75, y - r * 1.05, x + r * 1.35, y - r * .1, x, y + r * .85);
+    ctx.closePath();
+  }
+
+  function tint(hex, a) { return hex + Math.round(a * 255).toString(16).padStart(2, '0'); }
+
+  function drawBoard(u) {
+    ctx.fillStyle = '#fff4ec'; ctx.fillRect(0, 0, 15 * u, 15 * u);
+    BASE_ORIGIN.forEach((o, s) => {
+      ctx.fillStyle = L.COLORS[s]; ctx.fillRect(o[0] * u, o[1] * u, 6 * u, 6 * u);
+      ctx.fillStyle = '#fff'; ctx.fillRect((o[0] + 1) * u, (o[1] + 1) * u, 4 * u, 4 * u);
+      SLOT.forEach((sl) => {
+        ctx.beginPath(); ctx.arc((o[0] + sl[0]) * u, (o[1] + sl[1]) * u, .5 * u, 0, 7);
+        ctx.fillStyle = tint(L.COLORS[s], .3); ctx.fill();
+      });
+    });
+    ctx.lineWidth = Math.max(1, u * .04); ctx.strokeStyle = '#6b6b6b';
+    L.TRACK.forEach((c, i) => {
+      const s = L.START.indexOf(i);
+      ctx.fillStyle = s >= 0 ? tint(L.COLORS[s], .55) : '#fff';
+      ctx.fillRect(c[0] * u, c[1] * u, u, u); ctx.strokeRect(c[0] * u, c[1] * u, u, u);
+      if (L.SAFE.has(i) && s < 0) { heart((c[0] + .5) * u, (c[1] + .5) * u, u * .26); ctx.fillStyle = '#e8a1b4'; ctx.fill(); }
+    });
+    L.HOME.forEach((h, s) => h.forEach((c) => {
+      ctx.fillStyle = L.COLORS[s]; ctx.fillRect(c[0] * u, c[1] * u, u, u); ctx.strokeRect(c[0] * u, c[1] * u, u, u);
+    }));
+    const m = 7.5 * u;
+    [[[6, 6], [6, 9]], [[6, 6], [9, 6]], [[9, 6], [9, 9]], [[6, 9], [9, 9]]].forEach((e, s) => {
+      ctx.beginPath(); ctx.moveTo(e[0][0] * u, e[0][1] * u); ctx.lineTo(e[1][0] * u, e[1][1] * u); ctx.lineTo(m, m); ctx.closePath();
+      ctx.fillStyle = L.COLORS[s]; ctx.fill(); ctx.stroke();
+    });
+  }
+
+  function drawTokens(u, t) {
+    const items = [];
+    [0, 2].forEach((seat) => S.tok[seat].forEach((p, i) => items.push({ seat, i, p, pos: tokenPos(seat, i, p) })));
+    const groups = {};
+    items.forEach((it) => { if (it.p > 0 && it.p < L.DONE) (groups[it.pos.join()] = groups[it.pos.join()] || []).push(it); });
+    Object.values(groups).forEach((g) => {
+      if (g.length > 1) g.forEach((it, k) => {
+        const a = k / g.length * Math.PI * 2;
+        it.pos = [it.pos[0] + Math.cos(a) * .2, it.pos[1] + Math.sin(a) * .2]; it.small = true;
+      });
+    });
+    const can = L.movable(S, mySeat);
+    items.forEach((it) => {
+      const x = it.pos[0] * u, y = it.pos[1] * u, r = (it.small ? .27 : .36) * u;
+      if (it.seat === mySeat && can.includes(it.i)) {
+        ctx.beginPath(); ctx.arc(x, y, r + u * (.1 + .05 * Math.sin(t / 150)), 0, 7);
+        ctx.lineWidth = u * .09; ctx.strokeStyle = '#ffb300'; ctx.stroke();
+      }
+      heart(x, y + u * .04, r * 1.15); ctx.fillStyle = '#0005'; ctx.fill();
+      heart(x, y, r * 1.15); ctx.fillStyle = L.COLORS[it.seat]; ctx.fill();
+      ctx.lineWidth = u * .07; ctx.strokeStyle = '#fff'; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x - r * .38, y - r * .3, r * .16, 0, 7); ctx.fillStyle = '#fff9'; ctx.fill();
+    });
+  }
+
+  function fit() {
+    const w = Math.round(cv.clientWidth * (window.devicePixelRatio || 1));
+    if (w && cv.width !== w) { cv.width = w; cv.height = w; }
+  }
+
+  function frame(t) {
+    if ($('game').style.display === 'block') {
+      fit();
+      const u = cv.width / 15;
+      drawBoard(u); drawTokens(u, t);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  cv.addEventListener('pointerdown', (e) => {
+    const r = cv.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * 15, y = (e.clientY - r.top) / r.height * 15;
+    let best = -1, bd = .75;
+    L.movable(S, mySeat).forEach((i) => {
+      const p = tokenPos(mySeat, i, S.tok[mySeat][i]);
+      const d = Math.hypot(p[0] - x, p[1] - y);
+      if (d < bd) { bd = d; best = i; }
+    });
+    if (best >= 0) act('move', best);
+  });
+
+  $('rollBtn').onclick = () => act('roll');
+  $('againBtn').onclick = () => act('again');
+  $('copyBtn').onclick = () => {
+    const el = $('link'); el.select();
+    (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject()).catch(() => document.execCommand('copy'));
+    $('copyBtn').textContent = 'Copied'; setTimeout(() => $('copyBtn').textContent = 'Copy', 1500);
+  };
+  $('waBtn').onclick = () => window.open('https://wa.me/?text=' + encodeURIComponent('Come and play Ludo with me: ' + $('link').value), '_blank');
+  $('newBtn').onclick = () => { store('ludo-host', undefined); say('Setting up your game...'); startHost(randCode(), null); };
+  $('resumeBtn').onclick = () => { const sv = load('ludo-host'); if (sv) { say('Resuming...'); startHost(sv.code, sv.S); } };
+
+  // ---------- floating hearts ----------
+  (function () {
+    const box = $('hearts');
+    for (let i = 0; i < 14; i++) {
+      const h = document.createElement('i');
+      h.textContent = '\u2665';
+      h.style.left = Math.random() * 100 + '%';
+      h.style.fontSize = 14 + Math.random() * 26 + 'px';
+      h.style.animationDuration = 12 + Math.random() * 14 + 's';
+      h.style.animationDelay = -Math.random() * 20 + 's';
+      box.appendChild(h);
+    }
+  })();
+
+  // ---------- boot ----------
+  const hash = location.hash.replace('#', '').trim();
+  const saved = load('ludo-host');
+  if (hash && !(saved && saved.code === hash)) startGuest(hash);
+  else if (hash && saved && saved.code === hash) { say('Resuming your game...'); startHost(saved.code, saved.S); }
+  else if (saved) $('resumeBtn').style.display = 'inline-block';
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
